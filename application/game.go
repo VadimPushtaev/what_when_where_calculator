@@ -12,16 +12,19 @@ type Sector struct {
 	table   *Table
 }
 
-type Table struct {
-	sectors []Sector
+type GameTurn struct {
+	selectedSector int
+	won            bool
+	probability    float32
 }
 
 type Game struct {
-	teamA  int
-	teamB  int
-	goal   int
-	table  Table
-	logger *zap.Logger
+	teamA   int
+	teamB   int
+	goal    int
+	table   Table
+	history []*GameTurn
+	logger  *zap.Logger
 }
 
 func (game *Game) OpenedSectorsNames() []string {
@@ -48,11 +51,20 @@ func (game *Game) AddSector(winRate float32, name string) {
 	})
 }
 
+func (game *Game) AddOpenedSector(winRate float32, name string) {
+	game.table.sectors = append(game.table.sectors, Sector{
+		winRate: winRate,
+		name:    name,
+		opened:  true,
+		table:   &game.table,
+	})
+}
+
 func NewGame(logger *zap.Logger) *Game {
 	game := &Game{
 		teamA: 0,
 		teamB: 0,
-		goal:  2,
+		goal:  6,
 		table: Table{
 			[]Sector{},
 		},
@@ -91,41 +103,67 @@ func (game *Game) Copy() *Game {
 	}
 }
 
-func (game *Game) AllPossibilities() {
-	AllPossibilitiesRecursive(game, 1)
-}
+func PlayRandomGames(n int, logger *zap.Logger) []*Game {
+	var result []*Game
 
-func AllPossibilitiesRecursive(game *Game, p float32) {
-	if game.teamA >= game.goal || game.teamB >= game.goal {
-		game.logger.Sugar().Infow(
-			"Game is finished",
-			"teamA", game.teamA,
-			"teamB", game.teamB,
-			"probability", p,
-			"opened", game.OpenedSectorsNames(),
-		)
-		return
+	for i := 0; i < n; i++ {
+		game := NewGame(logger)
+		game.PlayRandom()
+		result = append(result, game)
 	}
 
-	for i := 0; i < len(game.table.sectors); i++ {
-		j := i
-		for game.table.sectors[j].opened == true {
-			j++
-			if j >= len(game.table.sectors) {
-				j = 0
-			}
+	return result
+}
+
+func (game *Game) PlayRandom() {
+	plan := RandomSelectorPlan(len(game.table.sectors))
+	game.PlayByPlan(plan)
+}
+
+func (game *Game) PlayByPlan(plan *GamePlan) {
+	var p float32 = 1.0
+	for {
+		if game.teamA >= game.goal || game.teamB >= game.goal {
+			game.logger.Sugar().Infow(
+				"Game is finished",
+				"teamA", game.teamA,
+				"teamB", game.teamB,
+				"probability", p,
+				"opened", game.OpenedSectorsNames(),
+			)
+			return
+		} else {
+			game.logger.Sugar().Infow(
+				"Game is not finished",
+				"teamA", game.teamA,
+				"teamB", game.teamB,
+				"probability", p,
+				"opened", game.OpenedSectorsNames(),
+			)
 		}
 
-		aGame := game.Copy()
-		aGame.table.sectors[j].opened = true
-		aGame.table.sectors[j].won = true
-		aGame.teamA++
-		AllPossibilitiesRecursive(aGame, p*game.table.sectors[j].winRate/float32(len(game.table.sectors)))
+		turnPlan := plan.Yield()
+		selected := game.table.SelectFirstNotOpenedSector(turnPlan.selectedSector)
+		won := turnPlan.loseChange < game.table.sectors[selected].winRate
+		chanceOfThisGameResult := game.table.sectors[selected].winRate
+		if !won {
+			chanceOfThisGameResult = 1 - chanceOfThisGameResult
+		}
+		p = p * chanceOfThisGameResult / float32(len(game.table.sectors))
 
-		bGame := game.Copy()
-		bGame.table.sectors[j].opened = true
-		aGame.table.sectors[j].won = false
-		bGame.teamB++
-		AllPossibilitiesRecursive(bGame, p*(1-game.table.sectors[j].winRate/float32(len(game.table.sectors))))
+		turn := &GameTurn{
+			selectedSector: selected,
+			won:            won,
+			probability:    p,
+		}
+		game.history = append(game.history, turn)
+
+		game.table.sectors[turn.selectedSector].opened = true
+		game.table.sectors[turn.selectedSector].won = won
+		if won {
+			game.teamA++
+		} else {
+			game.teamB++
+		}
 	}
 }
