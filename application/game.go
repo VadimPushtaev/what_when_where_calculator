@@ -1,22 +1,10 @@
 package application
 
 import (
+	"errors"
 	"go.uber.org/zap"
+	"strconv"
 )
-
-type Sector struct {
-	winRate float32
-	name    string
-	opened  bool
-	won     bool
-	table   *Table
-}
-
-type GameTurn struct {
-	selectedSector int
-	won            bool
-	probability    float32
-}
 
 type Game struct {
 	teamA   int
@@ -60,59 +48,73 @@ func (game *Game) AddOpenedSector(winRate float32, name string) {
 	})
 }
 
-func NewGame(logger *zap.Logger) *Game {
+func NewGame(goal int, sectorSetups []SectorSetup, alreadyPlayed []GameTurn, logger *zap.Logger) (*Game, error) {
 	game := &Game{
-		teamA: 0,
-		teamB: 0,
-		goal:  6,
-		table: Table{
-			[]Sector{},
-		},
+		teamA:  0,
+		teamB:  0,
+		goal:   goal,
+		table:  Table{},
 		logger: logger,
 	}
 
-	game.AddSector(0.5, "A")
-	game.AddSector(0.5, "B")
-	game.AddSector(0.5, "C")
-	game.AddSector(0.5, "D")
-	game.AddSector(0.4, "Blitz")
-	game.AddSector(0.5, "E")
-	game.AddSector(0.5, "F")
-	game.AddSector(0.5, "G")
-	game.AddSector(0.2, "Superblitz")
-	game.AddSector(0.5, "H")
-	game.AddSector(0.5, "I")
-	game.AddSector(0.5, "J")
-	game.AddSector(0.5, "13")
-
-	return game
-}
-
-func (game *Game) Copy() *Game {
-	var newSectors []Sector
-	newSectors = append(newSectors, game.table.sectors...)
-
-	return &Game{
-		teamA: game.teamA,
-		teamB: game.teamB,
-		goal:  game.goal,
-		table: Table{
-			sectors: newSectors,
-		},
-		logger: game.logger,
+	for i := 0; i < len(sectorSetups); i++ {
+		game.AddSector(sectorSetups[i].winRate, sectorSetups[i].name)
 	}
+
+	for _, turn := range alreadyPlayed {
+		err := game.PlayTurn(&turn)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(game.table.sectors) < goal*2-1 {
+		return nil, errors.New("Not enough sectors for this goal")
+	}
+
+	return game, nil
 }
 
-func PlayRandomGames(n int, logger *zap.Logger) []*Game {
+func (game *Game) PlayTurn(turn *GameTurn) error {
+	// Can't play non-existing sector
+	if turn.playedSector >= len(game.table.sectors) {
+		return errors.New(
+			"Can't play sector " + strconv.Itoa(turn.playedSector) +
+				" out of " + strconv.Itoa(len(game.table.sectors)),
+		)
+	}
+
+	// Can't play the same sector again
+	if game.table.sectors[turn.playedSector].opened {
+		return errors.New("can't play the same sector again")
+	}
+
+	game.history = append(game.history, turn)
+	game.table.sectors[turn.playedSector].opened = true
+	game.table.sectors[turn.playedSector].won = turn.won
+	if turn.won {
+		game.teamA++
+	} else {
+		game.teamB++
+	}
+
+	return nil
+}
+
+func PlayRandomGames(config *AppConfiguration, logger *zap.Logger) ([]*Game, error) {
 	var result []*Game
 
-	for i := 0; i < n; i++ {
-		game := NewGame(logger)
+	for i := 0; i < config.N; i++ {
+		game, err := NewGame(config.Goal, config.Sectors, config.PlayedTurns, logger)
+		if err != nil {
+			return nil, err
+		}
+
 		game.PlayRandom()
 		result = append(result, game)
 	}
 
-	return result
+	return result, nil
 }
 
 func (game *Game) PlayRandom() {
@@ -124,22 +126,7 @@ func (game *Game) PlayByPlan(plan *GamePlan) {
 	var p float32 = 1.0
 	for {
 		if game.teamA >= game.goal || game.teamB >= game.goal {
-			game.logger.Sugar().Infow(
-				"Game is finished",
-				"teamA", game.teamA,
-				"teamB", game.teamB,
-				"probability", p,
-				"opened", game.OpenedSectorsNames(),
-			)
 			return
-		} else {
-			game.logger.Sugar().Infow(
-				"Game is not finished",
-				"teamA", game.teamA,
-				"teamB", game.teamB,
-				"probability", p,
-				"opened", game.OpenedSectorsNames(),
-			)
 		}
 
 		turnPlan := plan.Yield()
@@ -152,18 +139,9 @@ func (game *Game) PlayByPlan(plan *GamePlan) {
 		p = p * chanceOfThisGameResult / float32(len(game.table.sectors))
 
 		turn := &GameTurn{
-			selectedSector: selected,
-			won:            won,
-			probability:    p,
+			playedSector: selected,
+			won:          won,
 		}
-		game.history = append(game.history, turn)
-
-		game.table.sectors[turn.selectedSector].opened = true
-		game.table.sectors[turn.selectedSector].won = won
-		if won {
-			game.teamA++
-		} else {
-			game.teamB++
-		}
+		game.PlayTurn(turn)
 	}
 }

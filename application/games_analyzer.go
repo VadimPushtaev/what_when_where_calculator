@@ -20,7 +20,7 @@ func (analyzer *GamesAnalyzer) Analyze() {
 			fmt.Println("game is nil")
 		}
 		for _, turn := range game.history {
-			sector := game.table.sectors[turn.selectedSector]
+			sector := game.table.sectors[turn.playedSector]
 			cnt, exists := nameCounter[sector.name]
 			if exists {
 				nameCounter[sector.name] = cnt + 1

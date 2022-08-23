@@ -7,6 +7,7 @@ import (
 )
 
 type App struct {
+	config *AppConfiguration
 	logger *zap.Logger
 }
 
@@ -20,6 +21,7 @@ func NewApp(configPath *string) *App {
 	)
 
 	return &App{
+		config: config,
 		logger: logger,
 	}
 }
@@ -29,9 +31,13 @@ func (app *App) Run() {
 
 	rand.Seed(time.Now().UnixNano())
 
-	games := PlayRandomGames(100_000, app.logger)
-	analyzer := NewGamesAnalyzer(games)
-	analyzer.Analyze()
+	games, err := PlayRandomGames(app.config, app.logger)
+	if err != nil {
+		app.logger.Sugar().Errorw("Error while playing games", "error", err)
+	} else {
+		analyzer := NewGamesAnalyzer(games)
+		analyzer.Analyze()
+	}
 
 	app.logger.Sugar().Info("Run is finished")
 }
